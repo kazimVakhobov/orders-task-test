@@ -69,4 +69,25 @@
       {"date": "2026-03-29", "total": 58871},
       {"date": "2026-03-30", "total": 52201},
       {"date": "2026-03-31", "total": 43576} ]`
-- 
+    - появилась 1 запись в customers-таблице с id = c_7 (Europe/Berlin)
+- 13:08 - запуск веб-хука
+  - из readme: docker compose run --rm orders-api webhooks --target http://host.docker.internal:3000/webhooks/order
+    - Container orders-aggregator-orders-api-run-f1389fabfe8c Creating
+    - Container orders-aggregator-orders-api-run-f1389fabfe8c Created
+    - webhooks sent: 92, responses: {"200":92}
+  - успешно - также есть логи в самом приложение - какие запросы прилетели
+  - теперь нужно глянуть на разницу данных в статистике
+    - GET-запрос http://localhost:3000/customers/c_7/daily-totals?from=2026-03-27&to=2026-03-31
+    - `[ {"date": "2026-03-27", "total": 24736},
+    {"date": "2026-03-28", "total": 58233},
+    {"date": "2026-03-29", "total": 47639},
+    {"date": "2026-03-30", "total": 52201},
+    {"date": "2026-03-31", "total": 44064} ]`
+    - обновились данные за 2026-03-28 / 2026-03-29 / 2026-03-31
+    - за 29 число сумма уменьшилась, что странно - возможно был возврат
+      - да, за 29 число есть один возврат (refunded) на сумму 925600 != 58871 - 47639
+        - рассчет тоже не сходится, но возможно статистика берет не ту дату (из-за таймзоны)
+        - !!! но в таблицу orders нужно добавить два доп поля - когда запись была создана у нас и когда была обновлена у нас
+        - !!! точнее так:
+          - текущие created_at & updated_at переименовать в created_ext_at updated_ext_at
+          - и тайм-теги на нашей стороне записывать в текущие created_at & updated_at
