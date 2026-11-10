@@ -42,4 +42,39 @@ describe("POST /sync", () => {
     expect(Number(rows[0].amount_kop)).toBe(250000);
     expect(rows[0].created_at.toISOString()).toBe("2026-02-10T21:30:00.000Z");
   });
+
+  it("сохраняет скидку и оплаченную сумму из sync, а затем обновляет их вебхуком", async () => {
+    const o = apiOrder({ amount: "1000.00", discountPercent: 10, amountPaid: "900.00" });
+    ctx.api.pages.set(null, { items: [o], nextCursor: null });
+    await ctx.app.inject({ method: "POST", url: "/sync" });
+    const q = `SELECT discount_percent, amount_paid_kop FROM orders WHERE id = $1`;
+    let { rows } = await ctx.db.query(q, [o.id]);
+    expect(Number(rows[0].discount_percent)).toBe(10);
+    expect(Number(rows[0].amount_paid_kop)).toBe(90000);
+
+    await ctx.app.inject({
+      method: "POST",
+      url: "/webhooks/order",
+      payload: { ...o, discountPercent: 20, amountPaid: 800, updatedAt: "2026-02-11T00:00:00Z" },
+    });
+    ({ rows } = await ctx.db.query(q, [o.id]));
+    expect(Number(rows[0].discount_percent)).toBe(20);
+    expect(Number(rows[0].amount_paid_kop)).toBe(80000);
+  });
+
+  it("заказ без скидочных полей: скидка 0, оплачено = сумме заказа", async () => {
+    const o = apiOrder({ amount: 250 });
+    ctx.api.pages.set(null, { items: [o], nextCursor: null });
+    await ctx.app.inject({ method: "POST", url: "/sync" });
+    const { rows } = await ctx.db.query(`SELECT discount_percent, amount_paid_kop FROM orders WHERE id = $1`, [o.id]);
+    expect(Number(rows[0].discount_percent)).toBe(0);
+    expect(Number(rows[0].amount_paid_kop)).toBe(25000);
+  });
+
+  it("некорректная amountPaid — заказ невалиден", async () => {
+    const o = apiOrder({ amountPaid: "abc" });
+    ctx.api.pages.set(null, { items: [o], nextCursor: null });
+    const res = await ctx.app.inject({ method: "POST", url: "/sync" });
+    expect(res.json()).toMatchObject({ invalid: 1, applied: 0 });
+  });
 });

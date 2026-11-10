@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiOrder, dailyTotals, postWebhook, setupTestApp } from "./helpers.js";
 
 const ctx = setupTestApp();
@@ -13,10 +13,32 @@ describe("GET /customers/:id/daily-totals", () => {
     const res = await dailyTotals(ctx.app, "c_1", "2026-02-09", "2026-02-11");
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([
-      { date: "2026-02-09", total: 0 },
-      { date: "2026-02-10", total: 1000 },
-      { date: "2026-02-11", total: 349 },
+      { date: "2026-02-09", total: 0, gross: 0, discount: 0, net: 0 },
+      { date: "2026-02-10", total: 1000, gross: 1000, discount: 0, net: 1000 },
+      { date: "2026-02-11", total: 349, gross: 349, discount: 0, net: 349 },
     ]);
+  });
+
+  it("считает gross, discount и net по amountPaid", async () => {
+    await postWebhook(ctx.app, apiOrder({ amount: 1000, discountPercent: 10, amountPaid: 900 }));
+    await postWebhook(ctx.app, apiOrder({ amount: 1500, discountPercent: 13.75, amountPaid: 1293.75 }));
+    await postWebhook(ctx.app, apiOrder({ amount: 100, discountPercent: 0, amountPaid: 100 }));
+    const res = await dailyTotals(ctx.app, "c_1", "2026-02-10", "2026-02-10");
+    expect(res.json()).toEqual([{ date: "2026-02-10", total: 2600, gross: 2600, discount: 306.25, net: 2293.75 }]);
+  });
+
+  it("заказ в старом формате (без скидочных полей) — без скидки", async () => {
+    await postWebhook(ctx.app, apiOrder({ amount: 300 }));
+    const res = await dailyTotals(ctx.app, "c_1", "2026-02-10", "2026-02-10");
+    expect(res.json()).toEqual([{ date: "2026-02-10", total: 300, gross: 300, discount: 0, net: 300 }]);
+  });
+
+  it("скидки pending и refunded заказов не учитываются", async () => {
+    await postWebhook(ctx.app, apiOrder({ amount: 1000, discountPercent: 10, amountPaid: 900 }));
+    await postWebhook(ctx.app, apiOrder({ amount: 700, discountPercent: 50, amountPaid: 350, status: "pending" }));
+    await postWebhook(ctx.app, apiOrder({ amount: 900, discountPercent: 50, amountPaid: 450, status: "refunded" }));
+    const res = await dailyTotals(ctx.app, "c_1", "2026-02-10", "2026-02-10");
+    expect(res.json()).toEqual([{ date: "2026-02-10", total: 1000, gross: 1000, discount: 100, net: 900 }]);
   });
 
   it("не учитывает pending и refunded", async () => {
@@ -24,7 +46,7 @@ describe("GET /customers/:id/daily-totals", () => {
     await postWebhook(ctx.app, apiOrder({ amount: 700, status: "pending" }));
     await postWebhook(ctx.app, apiOrder({ amount: 900, status: "refunded" }));
     const res = await dailyTotals(ctx.app, "c_1", "2026-02-10", "2026-02-10");
-    expect(res.json()).toEqual([{ date: "2026-02-10", total: 500 }]);
+    expect(res.json()).toEqual([{ date: "2026-02-10", total: 500, gross: 500, discount: 0, net: 500 }]);
   });
 
   it("учитывает только заказы этого клиента", async () => {
@@ -32,7 +54,7 @@ describe("GET /customers/:id/daily-totals", () => {
     await postWebhook(ctx.app, apiOrder({ amount: 500 }));
     await postWebhook(ctx.app, apiOrder({ amount: 800, customerId: "c_2" }));
     const res = await dailyTotals(ctx.app, "c_2", "2026-02-10", "2026-02-10");
-    expect(res.json()).toEqual([{ date: "2026-02-10", total: 800 }]);
+    expect(res.json()).toEqual([{ date: "2026-02-10", total: 800, gross: 800, discount: 0, net: 800 }]);
   });
 
   it("таймзона клиента берётся из API один раз", async () => {
@@ -51,5 +73,52 @@ describe("GET /customers/:id/daily-totals", () => {
   it("неизвестный клиент — 404", async () => {
     const res = await dailyTotals(ctx.app, "nobody", "2026-02-10", "2026-02-10");
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("daily-totals: переход на летнее время (Europe/Berlin, 2026-03-29 01:00 UTC)", () => {
+  // Результат не должен зависеть от того, когда задан вопрос: зимой (+1) или летом (+2).
+  afterEach(() => vi.useRealTimers());
+
+  const day = (date: string, v: number) => ({ date, total: v, gross: v, discount: 0, net: v });
+
+  it.each([
+    ["зимой", "2026-11-10T12:00:00Z"],
+    ["летом", "2026-07-15T12:00:00Z"],
+  ])("день заказа определяется смещением на момент заказа (запрос %s)", async (_season, now) => {
+    // подменяем только Date: таймеры нужны драйверу БД
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(now) });
+    ctx.api.customers.set("c_7", "Europe/Berlin");
+    const order = (createdAt: string, amount: number) =>
+      postWebhook(ctx.app, apiOrder({ customerId: "c_7", amount, createdAt }));
+
+    // до перехода Берлин UTC+1: 22:40Z → 23:40 того же дня
+    await order("2026-03-28T12:00:00Z", 50);
+    await order("2026-03-28T22:40:00Z", 100);
+    // после перехода UTC+2: 22:40Z → 00:40 следующего дня
+    await order("2026-03-29T10:00:00Z", 200);
+    await order("2026-03-29T22:40:08Z", 9306); // → 30.03
+    await order("2026-03-30T12:00:00Z", 300);
+    await order("2026-03-30T22:40:44Z", 1823); // → 31.03
+    await order("2026-03-31T22:40:06Z", 4999); // → 01.04, вне диапазона
+
+    const res = await dailyTotals(ctx.app, "c_7", "2026-03-28", "2026-03-31");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([
+      day("2026-03-28", 150),
+      day("2026-03-29", 200),
+      day("2026-03-30", 9606),
+      day("2026-03-31", 1823),
+    ]);
+  });
+
+  it("заказ в час перехода: 00:30Z ещё UTC+1, 01:30Z уже UTC+2", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-10T12:00:00Z") });
+    ctx.api.customers.set("c_7", "Europe/Berlin");
+    await postWebhook(ctx.app, apiOrder({ customerId: "c_7", amount: 10, createdAt: "2026-03-29T00:30:00Z" })); // 01:30 → 29.03
+    await postWebhook(ctx.app, apiOrder({ customerId: "c_7", amount: 20, createdAt: "2026-03-29T21:59:00Z" })); // 23:59 → 29.03
+    await postWebhook(ctx.app, apiOrder({ customerId: "c_7", amount: 40, createdAt: "2026-03-29T22:00:00Z" })); // 00:00 → 30.03
+    const res = await dailyTotals(ctx.app, "c_7", "2026-03-29", "2026-03-30");
+    expect(res.json()).toEqual([day("2026-03-29", 30), day("2026-03-30", 40)]);
   });
 });

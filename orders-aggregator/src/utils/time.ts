@@ -34,6 +34,25 @@ export function dateAtOffset(at: Date, offsetMinutes: number): string {
   return new Date(at.getTime() + offsetMinutes * 60_000).toISOString().slice(0, 10);
 }
 
+/**
+ * Возвращает функцию «момент → календарная дата (YYYY-MM-DD) в таймзоне».
+ * Смещение (в том числе летнее время) определяется по самому моменту, а не по текущей дате.
+ * Форматтер создаётся один раз — он дорогой, а вызывать функцию приходится на каждый заказ.
+ */
+export function dateInTimeZone(timeZone: string): (at: Date) => string {
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+  return (at) => {
+    const parts = fmt.formatToParts(at);
+    const get = (type: string) => parts.find((p) => p.type === type)!.value;
+    return `${get("year")}-${get("month")}-${get("day")}`;
+  };
+}
+
+/** Полночь UTC календарной даты YYYY-MM-DD, сдвинутая на `days` суток. */
+export function utcDayStart(date: string, days = 0): Date {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000);
+}
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function isCalendarDate(s: unknown): s is string {
