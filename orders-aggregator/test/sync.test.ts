@@ -77,4 +77,13 @@ describe("POST /sync", () => {
     const res = await ctx.app.inject({ method: "POST", url: "/sync" });
     expect(res.json()).toMatchObject({ invalid: 1, applied: 0 });
   });
+
+  it("суммы с «плавающими» копейками сохраняются точно", async () => {
+    const o = apiOrder({ amount: 19.99, discountPercent: 10, amountPaid: 4723.9 });
+    ctx.api.pages.set(null, { items: [o], nextCursor: null });
+    await ctx.app.inject({ method: "POST", url: "/sync" });
+    const { rows } = await ctx.db.query(`SELECT amount_kop, amount_paid_kop FROM orders WHERE id = $1`, [o.id]);
+    expect(Number(rows[0].amount_kop)).toBe(1999);
+    expect(Number(rows[0].amount_paid_kop)).toBe(472390);
+  });
 });
