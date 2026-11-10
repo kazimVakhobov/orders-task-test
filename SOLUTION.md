@@ -91,3 +91,61 @@
         - !!! точнее так:
           - текущие created_at & updated_at переименовать в created_ext_at updated_ext_at
           - и тайм-теги на нашей стороне записывать в текущие created_at & updated_at
+- перерыв на обед 30 минут
+- 14:00 - приступаем к 1-й задаче - нужно написать миграцию (делегируем claude code)
+  - Заметка от Claude: 
+    `В строке 72 записано, что c_7 в Europe/Berlin. В конце марта 2026 Берлин переходит на летнее время (29.03), а daily считает смещение на сегодняшнюю дату. Это согласуется с жалобой на «часть дней». Но пока это гипотеза: она подтвердится, когда вы пересчитаете дни вручную и найдёте заказы, меняющие дату.`
+  - создана и применена 2-ая миграция
+    - добавлены две колонки 
+      - discount_percent NOT NULL DEFAULT 0
+      - amount_paid_kop NOT NULL как дефолт для старых записей берем значение из amount_kop
+  - добавлены новые поля в репозиторий orders
+  - добавлена обработка новых полей в сервис orders
+    - amountPaid обрабатывается точно также, как и сам amount - ожидается, что формат будет одинаковым
+  - добавлены 4 теста в sync.test.ts
+    - новый заказ со скидкой в 10%
+    - обновление заказа - скидка 20%
+    - новый заказ без скидки
+    - невалидное значение оплаты
+  - обновлен README для поддержания актуальности
+  - добавлены новые поля в DailyTotal
+    - total - оставляем для обратной совместимости (как указано в TASK)
+    - gross - сколько должен был заплатить кастомер
+    - discount - величина скидки (не процент) `gross - net` (как указано в TASK)
+    - net - фактическая оплата (берется из amountPaid)
+  - добавлены 3 теста в totals.test.ts
+    - рассчет со скидками
+    - рассчет без скидок
+    - рассчет транзакций по статусу
+  - теперь для теста нужно сбросить бд и повторить заполнение базы через sync - статистика - webhook
+    - docker compose down -v 
+      - ✔ Container orders-aggregator-postgres-1   Removed  0.2s
+      - ✔ Container orders-aggregator-orders-api-1 Removed  10.2s
+      - ✔ Network orders-aggregator_default        Removed  0.2s
+    - docker compose up -d
+      - ✔ Network orders-aggregator_default        Created  0.0s
+      - ✔ Container orders-aggregator-orders-api-1 Started  0.2s
+      - ✔ Container orders-aggregator-postgres-1   Started  0.2s
+    - npm run dev
+      - все миграции применились автоматом
+    - POST запрос - sync запустился - orders-таблица заполнилась
+      - записи с discount_percent > 0 есть - новые поля записываются
+      - order_id = o_01350
+        - amount_kop = 498300
+        - discount_percent = 10
+        - amount_paid_kop = 448470 
+          - 10% от 498300 = 49830
+          - 498300 - 49830 = 448470 - совпадает с amount_paid_kop в бд - рассчеты работают корректно
+    - прогон тестов npm test - корректный
+      - orders-aggregator@2.3.0 test
+      - vitest run 
+      - RUN  v3.0.5 /Users/double_b/Projects/cv/3205/orders-task/orders-aggregator 
+      - ✓ test/totals.test.ts (9 tests) 153ms 
+      - ✓ test/sync.test.ts (7 tests) 84ms 
+      - ✓ test/time.test.ts (7 tests) 10ms 
+      - ✓ test/webhooks.test.ts (5 tests) 88ms 
+      - ✓ test/money.test.ts (5 tests) 1ms 
+      - Test Files  5 passed (5)
+      - Tests  33 passed (33)
+      - Start at  14:39:02 
+      - Duration  1.02s (transform 53ms, setup 0ms, collect 237ms, tests 337ms, environment 0ms, prepare 105ms)
