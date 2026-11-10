@@ -1,0 +1,5 @@
+orders-mock-*.tar.gz
+.idea/
+node_modules/
+.env
+.DS_Store
