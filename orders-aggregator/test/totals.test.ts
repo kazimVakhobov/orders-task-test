@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiOrder, dailyTotals, postWebhook, setupTestApp } from "./helpers.js";
 
 const ctx = setupTestApp();
@@ -73,5 +73,52 @@ describe("GET /customers/:id/daily-totals", () => {
   it("неизвестный клиент — 404", async () => {
     const res = await dailyTotals(ctx.app, "nobody", "2026-02-10", "2026-02-10");
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("daily-totals: переход на летнее время (Europe/Berlin, 2026-03-29 01:00 UTC)", () => {
+  // Результат не должен зависеть от того, когда задан вопрос: зимой (+1) или летом (+2).
+  afterEach(() => vi.useRealTimers());
+
+  const day = (date: string, v: number) => ({ date, total: v, gross: v, discount: 0, net: v });
+
+  it.each([
+    ["зимой", "2026-11-10T12:00:00Z"],
+    ["летом", "2026-07-15T12:00:00Z"],
+  ])("день заказа определяется смещением на момент заказа (запрос %s)", async (_season, now) => {
+    // подменяем только Date: таймеры нужны драйверу БД
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(now) });
+    ctx.api.customers.set("c_7", "Europe/Berlin");
+    const order = (createdAt: string, amount: number) =>
+      postWebhook(ctx.app, apiOrder({ customerId: "c_7", amount, createdAt }));
+
+    // до перехода Берлин UTC+1: 22:40Z → 23:40 того же дня
+    await order("2026-03-28T12:00:00Z", 50);
+    await order("2026-03-28T22:40:00Z", 100);
+    // после перехода UTC+2: 22:40Z → 00:40 следующего дня
+    await order("2026-03-29T10:00:00Z", 200);
+    await order("2026-03-29T22:40:08Z", 9306); // → 30.03
+    await order("2026-03-30T12:00:00Z", 300);
+    await order("2026-03-30T22:40:44Z", 1823); // → 31.03
+    await order("2026-03-31T22:40:06Z", 4999); // → 01.04, вне диапазона
+
+    const res = await dailyTotals(ctx.app, "c_7", "2026-03-28", "2026-03-31");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([
+      day("2026-03-28", 150),
+      day("2026-03-29", 200),
+      day("2026-03-30", 9606),
+      day("2026-03-31", 1823),
+    ]);
+  });
+
+  it("заказ в час перехода: 00:30Z ещё UTC+1, 01:30Z уже UTC+2", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-10T12:00:00Z") });
+    ctx.api.customers.set("c_7", "Europe/Berlin");
+    await postWebhook(ctx.app, apiOrder({ customerId: "c_7", amount: 10, createdAt: "2026-03-29T00:30:00Z" })); // 01:30 → 29.03
+    await postWebhook(ctx.app, apiOrder({ customerId: "c_7", amount: 20, createdAt: "2026-03-29T21:59:00Z" })); // 23:59 → 29.03
+    await postWebhook(ctx.app, apiOrder({ customerId: "c_7", amount: 40, createdAt: "2026-03-29T22:00:00Z" })); // 00:00 → 30.03
+    const res = await dailyTotals(ctx.app, "c_7", "2026-03-29", "2026-03-30");
+    expect(res.json()).toEqual([day("2026-03-29", 30), day("2026-03-30", 40)]);
   });
 });
