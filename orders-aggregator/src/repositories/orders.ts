@@ -11,6 +11,8 @@ export interface Order {
   updatedAt: Date;
 }
 
+export type SaveResult = "created" | "updated" | "stale";
+
 interface Row {
   id: string;
   customer_id: string;
@@ -55,6 +57,31 @@ export class OrdersRepository {
          updated_at  = excluded.updated_at`,
       [o.id, o.customerId, o.amountKop, o.discountPercent, o.amountPaidKop, o.status, o.createdAt, o.updatedAt],
     );
+  }
+
+  /**
+   * Атомарно сохраняет версию заказа, только если она новее сохранённой (по updated_at).
+   * Проверка идёт внутри INSERT ... ON CONFLICT под блокировкой строки, поэтому
+   * параллельные вебхуки по одному заказу не могут затереть новую версию старой.
+   */
+  async saveIfNewer(o: Order): Promise<SaveResult> {
+    const { rows } = await this.db.query<{ inserted: boolean }>(
+      `INSERT INTO orders (id, customer_id, amount_kop, discount_percent, amount_paid_kop, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (id) DO UPDATE SET
+         customer_id      = excluded.customer_id,
+         amount_kop       = excluded.amount_kop,
+         discount_percent = excluded.discount_percent,
+         amount_paid_kop  = excluded.amount_paid_kop,
+         status           = excluded.status,
+         created_at       = excluded.created_at,
+         updated_at       = excluded.updated_at
+       WHERE orders.updated_at < excluded.updated_at
+       RETURNING (xmax = 0) AS inserted`,
+      [o.id, o.customerId, o.amountKop, o.discountPercent, o.amountPaidKop, o.status, o.createdAt, o.updatedAt],
+    );
+    if (rows.length === 0) return "stale"; // WHERE не выполнено: строка не тронута
+    return rows[0].inserted ? "created" : "updated";
   }
 
   /** Оплаченные заказы клиента, созданные в [from, to). */

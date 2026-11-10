@@ -45,14 +45,11 @@ export class OrdersService {
 
   /**
    * Применяет версию заказа (из синка или вебхука).
-   * Вебхуки приходят с повторами и не по порядку, поэтому версию сохраняем,
+   * Вебхуки приходят с повторами, не по порядку и могут идти параллельно, поэтому версию сохраняем,
    * только если она новее уже сохранённой (по updatedAt).
    */
   async apply(raw: unknown): Promise<ApplyResult> {
-    const incoming = this.normalize(raw);
-    const current = await this.orders.get(incoming.id);
-    if (current && current.updatedAt.getTime() >= incoming.updatedAt.getTime()) return "stale";
-    await this.orders.save(incoming);
-    return current ? "updated" : "created";
+    // Сравнение версий — атомарно в БД: между чтением и записью параллельный вебхук не вклинится
+    return this.orders.saveIfNewer(this.normalize(raw));
   }
 }
